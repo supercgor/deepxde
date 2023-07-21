@@ -9,7 +9,9 @@ __all__ = [
     "PFNN",
     "PODDeepONet",
     "PODMIONet",
+    "DeepONet",
 ]
+
 
 from .deeponet import DeepONet, DeepONetCartesianProd, PODDeepONet
 from .mionet import MIONetCartesianProd, PODMIONet

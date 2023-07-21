@@ -58,6 +58,7 @@ def get(identifier):
             "sin": bkd.sin,
             "swish": bkd.silu,
             "tanh": bkd.tanh,
+            "gelu": bkd.gelu,
         }[identifier]
     if callable(identifier):
         return identifier

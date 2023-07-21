@@ -277,6 +277,10 @@ def relu(x):
 def gelu(x):
     """Computes Gaussian Error Linear Unit."""
 
+def gelu(x):
+    """Computes Gaussian Error Linear Unit function."""
+
+
 def selu(x):
     """Computes scaled exponential linear."""
 

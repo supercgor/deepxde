@@ -128,6 +128,10 @@ def relu(x):
 def gelu(x):
     return torch.nn.functional.gelu(x)
 
+def gelu(x):
+    return torch.nn.functional.gelu(x)
+
+
 def selu(x):
     return torch.nn.functional.selu(x)
 

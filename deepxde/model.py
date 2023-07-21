@@ -852,7 +852,7 @@ class Model:
         if config.rank == 0:
             display.training_display(self.train_state)
 
-    def predict(self, x, operator=None, callbacks=None):
+    def predict(self, x, aux_vars = None, operator=None, callbacks=None):
         """Generates predictions for the input samples. If `operator` is ``None``,
         returns the network output, otherwise returns the output of the `operator`.
 
@@ -880,91 +880,141 @@ class Model:
             callbacks.on_predict_end()
             return y
 
+        # For CartesianProd, we have to do autograd on each batch sample, and since PDEOperatorCartesianProd didn't have `auxiliary_var_fn`, so we separate the case.
+        #TODO: too complicated for CartesianProd because there is outer-product in forward pass. We need to do autograd on each batch sample.
+        isCartesianProd = "CartesianProd" in str(self.data.__class__) # this may not be the best way to check if it is CartesianProd
+        
         # operator is not None
-        if utils.get_num_args(operator) == 3:
-            if hasattr(self.data, "auxiliary_var_fn"):
-                aux_vars = self.data.auxiliary_var_fn(x).astype(config.real(np))
-            else:
-                aux_vars = None
-        if backend_name == "tensorflow.compat.v1":
-            if utils.get_num_args(operator) == 2:
-                op = operator(self.net.inputs, self.net.outputs)
-                feed_dict = self.net.feed_dict(False, x)
-            elif utils.get_num_args(operator) == 3:
-                op = operator(
-                    self.net.inputs, self.net.outputs, self.net.auxiliary_vars
-                )
-                feed_dict = self.net.feed_dict(False, x, auxiliary_vars=aux_vars)
-            y = self.sess.run(op, feed_dict=feed_dict)
-        elif backend_name == "tensorflow":
-            if utils.get_num_args(operator) == 2:
+        if not isCartesianProd:
+            if utils.get_num_args(operator) == 3:
+                if aux_vars is None and hasattr(self.data, "auxiliary_var_fn"):
+                    aux_vars = self.data.auxiliary_var_fn(x).astype(config.real(np))
+            if backend_name == "tensorflow.compat.v1":
+                if utils.get_num_args(operator) == 2:
+                    op = operator(self.net.inputs, self.net.outputs)
+                    feed_dict = self.net.feed_dict(False, x)
+                elif utils.get_num_args(operator) == 3:
+                    op = operator(
+                        self.net.inputs, self.net.outputs, self.net.auxiliary_vars
+                    )
+                    feed_dict = self.net.feed_dict(False, x, auxiliary_vars=aux_vars)
+                y = self.sess.run(op, feed_dict=feed_dict)
+            elif backend_name == "tensorflow":
+                if utils.get_num_args(operator) == 2:
 
-                @tf.function
-                def op(inputs):
-                    y = self.net(inputs)
-                    return operator(inputs, y)
+                    @tf.function
+                    def op(inputs):
+                        y = self.net(inputs)
+                        return operator(inputs, y)
 
-            elif utils.get_num_args(operator) == 3:
+                elif utils.get_num_args(operator) == 3:
 
-                @tf.function
-                def op(inputs):
-                    y = self.net(inputs)
-                    return operator(inputs, y, aux_vars)
+                    @tf.function
+                    def op(inputs):
+                        y = self.net(inputs)
+                        return operator(inputs, y, aux_vars)
 
-            y = op(x)
-            y = utils.to_numpy(y)
-        elif backend_name == "pytorch":
-            self.net.eval()
-            dtype = torch.get_default_dtype()
-            if isinstance(x, tuple):
-                inputs = tuple(map(lambda x: torch.as_tensor(x, dtype=dtype).requires_grad_(), x))
-            else:
+                y = op(x)
+                y = utils.to_numpy(y)
+            elif backend_name == "pytorch":
+                self.net.eval()
+                dtype = torch.get_default_dtype()
                 inputs = torch.as_tensor(x, dtype=dtype).requires_grad_()
-
-            outputs = self.net(inputs)
-            
-            # For CartesianProd, we have to do autograd on each batch sample. 
-            #TODO: too complicated for CartesianProd because there is outer-product in forward pass. We need to do autograd on each batch sample.
-            isCartesianProd = "CartesianProd" in str(self.data.__class__) # this may not be the best way to check if it is CartesianProd
-            if isCartesianProd:
-                ys = []
-                for i in range(len(inputs[0])): # this check the length of brench inputs,
-                    branch = inputs[0][i]
-                    out = outputs[i][:, None]
-                    if utils.get_num_args(operator) == 2:
-                        y = operator((branch, inputs[1]), out).detach()
-                    elif utils.get_num_args(operator) == 3:
-                        if aux_vars is not None:
-                            aux_vars = torch.as_tensor(aux_vars, dtype=dtype)
-                        y = operator((branch, inputs[1]), out, aux_vars).detach()
-                    ys.append(y)
-                    grad.clear()
-                ys = torch.stack(ys)
-            else:
+                outputs = self.net(inputs)
                 if utils.get_num_args(operator) == 2:
                     y = operator(inputs, outputs)
                 elif utils.get_num_args(operator) == 3:
                     if aux_vars is not None:
                         aux_vars = torch.as_tensor(aux_vars, dtype=dtype)
                     y = operator(inputs, outputs, aux_vars)
-                ys = y
-            # Clear cached Jacobians and Hessians.
-            grad.clear()
-            y = utils.to_numpy(ys)
-        elif backend_name == "paddle":
-            self.net.eval()
-            inputs = paddle.to_tensor(x, stop_gradient=False)
-            outputs = self.net(inputs)
-            if utils.get_num_args(operator) == 2:
-                y = operator(inputs, outputs)
-            elif utils.get_num_args(operator) == 3:
-                # TODO: Paddle backend Implementation of Auxiliary variables.
-                # y = operator(inputs, outputs, paddle.to_tensor(aux_vars))
-                raise NotImplementedError(
-                    "Model.predict() with auxiliary variable hasn't been implemented "
-                    "for backend paddle."
-                )
-            y = utils.to_numpy(y)
+                # Clear cached Jacobians and Hessians.
+                grad.clear()
+                y = utils.to_numpy(y)
+            elif backend_name == "paddle":
+                self.net.eval()
+                inputs = paddle.to_tensor(x, stop_gradient=False)
+                outputs = self.net(inputs)
+                if utils.get_num_args(operator) == 2:
+                    y = operator(inputs, outputs)
+                elif utils.get_num_args(operator) == 3:
+                    # TODO: Paddle backend Implementation of Auxiliary variables.
+                    # y = operator(inputs, outputs, paddle.to_tensor(aux_vars))
+                    raise NotImplementedError(
+                        "Model.predict() with auxiliary variable hasn't been implemented "
+                        "for backend paddle."
+                    )
+                y = utils.to_numpy(y)
+        else:
+            if utils.get_num_args(operator) == 3:
+                if aux_vars is None:
+                    #TODO, this is a hacky way to get aux_vars for CartesianProd, we need to find a better way to do this.
+                    raise ValueError("aux_vars must be provided for CartesianProd if operator takes 3 arguments.")
+            if backend_name == "tensorflow.compat.v1":
+                #TODO, this might not work in CartesianProd.
+                if utils.get_num_args(operator) == 2:
+                    op = operator(self.net.inputs, self.net.outputs)
+                    feed_dict = self.net.feed_dict(False, x)
+                elif utils.get_num_args(operator) == 3:
+                    op = operator(
+                        self.net.inputs, self.net.outputs, self.net.auxiliary_vars
+                    )
+                    feed_dict = self.net.feed_dict(False, x, auxiliary_vars=aux_vars)
+                y = self.sess.run(op, feed_dict=feed_dict)
+            elif backend_name == "tensorflow":
+                #TODO, this might not work in CartesianProd.
+                if utils.get_num_args(operator) == 2:
+
+                    @tf.function
+                    def op(inputs):
+                        y = self.net(inputs)
+                        return operator(inputs, y)
+
+                elif utils.get_num_args(operator) == 3:
+
+                    @tf.function
+                    def op(inputs):
+                        y = self.net(inputs)
+                        return operator(inputs, y, aux_vars)
+
+                y = op(x)
+                y = utils.to_numpy(y)
+            elif backend_name == "pytorch":
+                self.net.eval()
+                dtype = torch.get_default_dtype()
+                inputs = tuple(map(lambda x: torch.as_tensor(x, dtype=dtype).requires_grad_(), x))
+                outputs = self.net(inputs)
+                if aux_vars is not None:
+                    aux_vars = torch.as_tensor(aux_vars, dtype=dtype)[...,None]
+                branchs = inputs[0].unsqueeze(-1)
+                outputs = outputs.unsqueeze(-1)
+                ys = []
+                if utils.get_num_args(operator) == 2:
+                    for branch, out in zip(branchs, outputs):
+                        y = operator((branch, inputs[1]), out).detach()
+                        ys.append(y)
+                        grad.clear()
+                elif utils.get_num_args(operator) == 3:
+                    for branch, out, aux_var in zip(branchs, outputs, aux_vars):
+                        y = operator((branch, inputs[1]), out, aux_var).detach()
+                        ys.append(y)
+                        grad.clear()
+                y = torch.stack(ys)[...,0]
+                y = utils.to_numpy(y)
+            elif backend_name == "paddle":
+                #TODO, this might not work in CartesianProd.
+                self.net.eval()
+                inputs = paddle.to_tensor(x, stop_gradient=False)
+                outputs = self.net(inputs)
+                if utils.get_num_args(operator) == 2:
+                    y = operator(inputs, outputs)
+                elif utils.get_num_args(operator) == 3:
+                    # TODO: Paddle backend Implementation of Auxiliary variables.
+                    # y = operator(inputs, outputs, paddle.to_tensor(aux_vars))
+                    raise NotImplementedError(
+                        "Model.predict() with auxiliary variable hasn't been implemented "
+                        "for backend paddle."
+                    )
+                y = utils.to_numpy(y)            
         callbacks.on_predict_end()
         return y
 

@@ -875,6 +875,9 @@ class Model:
             x = tuple(np.asarray(xi, dtype=config.real(np)) for xi in x)
         else:
             x = np.asarray(x, dtype=config.real(np))
+        if aux_vars is not None:
+            aux_vars = np.asarray(aux_vars, dtype=config.real(np))
+            
         callbacks = CallbackList(callbacks=callbacks)
         callbacks.set_model(self)
         callbacks.on_predict_begin()
@@ -884,34 +887,36 @@ class Model:
             callbacks.on_predict_end()
             return y
 
-        # For CartesianProd, we have to do autograd on each batch sample, and since PDEOperatorCartesianProd didn't have `auxiliary_var_fn`, so we separate the case.
-        #TODO: too complicated for CartesianProd because there is outer-product in forward pass. We need to do autograd on each batch sample.
+        # For CartesianProd, we have to do autograd on each batch sample. The reason is `autograd` does not support broadcasting. The gradient output is forced to be shaped the same as input. 
+        # PDEOperatorCartesianProd didn't have `auxiliary_var_fn`, so we separate the case.
         isCartesianProd = "CartesianProd" in str(self.data.__class__) # this may not be the best way to check if it is CartesianProd
         
+        num_args = utils.get_num_args(operator)
         # operator is not None
-        if not isCartesianProd:
-            if utils.get_num_args(operator) == 3:
+        if not isCartesianProd: # not CartesianProd, just do autograd once.
+            
+            if num_args == 3:
                 if aux_vars is None and hasattr(self.data, "auxiliary_var_fn"):
-                    aux_vars = self.data.auxiliary_var_fn(x).astype(config.real(np))
+                    aux_vars = self.data.auxiliary_var_fn(x).astype(config.real(np))    
             if backend_name == "tensorflow.compat.v1":
-                if utils.get_num_args(operator) == 2:
+                if num_args == 2:
                     op = operator(self.net.inputs, self.net.outputs)
                     feed_dict = self.net.feed_dict(False, x)
-                elif utils.get_num_args(operator) == 3:
+                elif num_args == 3:
                     op = operator(
                         self.net.inputs, self.net.outputs, self.net.auxiliary_vars
                     )
                     feed_dict = self.net.feed_dict(False, x, auxiliary_vars=aux_vars)
                 y = self.sess.run(op, feed_dict=feed_dict)
             elif backend_name == "tensorflow":
-                if utils.get_num_args(operator) == 2:
+                if num_args == 2:
 
                     @tf.function
                     def op(inputs):
                         y = self.net(inputs)
                         return operator(inputs, y)
 
-                elif utils.get_num_args(operator) == 3:
+                elif num_args == 3:
 
                     @tf.function
                     def op(inputs):
@@ -922,14 +927,13 @@ class Model:
                 y = utils.to_numpy(y)
             elif backend_name == "pytorch":
                 self.net.eval()
-                dtype = torch.get_default_dtype()
-                inputs = torch.as_tensor(x, dtype=dtype).requires_grad_()
+                inputs = torch.as_tensor(x).requires_grad_()
                 outputs = self.net(inputs)
-                if utils.get_num_args(operator) == 2:
+                if num_args == 2:
                     y = operator(inputs, outputs)
-                elif utils.get_num_args(operator) == 3:
+                elif num_args == 3:
                     if aux_vars is not None:
-                        aux_vars = torch.as_tensor(aux_vars, dtype=dtype)
+                        aux_vars = torch.as_tensor(aux_vars)
                     y = operator(inputs, outputs, aux_vars)
                 # Clear cached Jacobians and Hessians.
                 grad.clear()
@@ -938,9 +942,9 @@ class Model:
                 self.net.eval()
                 inputs = paddle.to_tensor(x, stop_gradient=False)
                 outputs = self.net(inputs)
-                if utils.get_num_args(operator) == 2:
+                if num_args == 2:
                     y = operator(inputs, outputs)
-                elif utils.get_num_args(operator) == 3:
+                elif num_args == 3:
                     # TODO: Paddle backend Implementation of Auxiliary variables.
                     # y = operator(inputs, outputs, paddle.to_tensor(aux_vars))
                     raise NotImplementedError(
@@ -948,17 +952,17 @@ class Model:
                         "for backend paddle."
                     )
                 y = utils.to_numpy(y)
-        else:
-            if utils.get_num_args(operator) == 3:
+        else: # CartesianProd, do autograd on each batch sample.
+            if num_args == 3:
                 if aux_vars is None:
                     #TODO, this is a hacky way to get aux_vars for CartesianProd, we need to find a better way to do this.
                     raise ValueError("aux_vars must be provided for CartesianProd if operator takes 3 arguments.")
             if backend_name == "tensorflow.compat.v1":
                 #TODO, this might not work in CartesianProd.
-                if utils.get_num_args(operator) == 2:
+                if num_args == 2:
                     op = operator(self.net.inputs, self.net.outputs)
                     feed_dict = self.net.feed_dict(False, x)
-                elif utils.get_num_args(operator) == 3:
+                elif num_args == 3:
                     op = operator(
                         self.net.inputs, self.net.outputs, self.net.auxiliary_vars
                     )
@@ -966,14 +970,14 @@ class Model:
                 y = self.sess.run(op, feed_dict=feed_dict)
             elif backend_name == "tensorflow":
                 #TODO, this might not work in CartesianProd.
-                if utils.get_num_args(operator) == 2:
+                if num_args == 2:
 
                     @tf.function
                     def op(inputs):
                         y = self.net(inputs)
                         return operator(inputs, y)
 
-                elif utils.get_num_args(operator) == 3:
+                elif num_args == 3:
 
                     @tf.function
                     def op(inputs):
@@ -984,20 +988,19 @@ class Model:
                 y = utils.to_numpy(y)
             elif backend_name == "pytorch":
                 self.net.eval()
-                dtype = torch.get_default_dtype()
-                inputs = tuple(map(lambda x: torch.as_tensor(x, dtype=dtype).requires_grad_(), x))
+                inputs = tuple(map(lambda x: torch.as_tensor(x).requires_grad_(), x))
                 outputs = self.net(inputs)
                 if aux_vars is not None:
-                    aux_vars = torch.as_tensor(aux_vars, dtype=dtype)[...,None]
+                    aux_vars = torch.as_tensor(aux_vars)[...,None]
                 branchs = inputs[0].unsqueeze(-1)
                 outputs = outputs.unsqueeze(-1)
                 ys = []
-                if utils.get_num_args(operator) == 2:
+                if num_args == 2:
                     for branch, out in zip(branchs, outputs):
                         y = operator((branch, inputs[1]), out).detach()
                         ys.append(y)
                         grad.clear()
-                elif utils.get_num_args(operator) == 3:
+                elif num_args == 3:
                     for branch, out, aux_var in zip(branchs, outputs, aux_vars):
                         y = operator((branch, inputs[1]), out, aux_var).detach()
                         ys.append(y)
@@ -1009,16 +1012,16 @@ class Model:
                 self.net.eval()
                 inputs = paddle.to_tensor(x, stop_gradient=False)
                 outputs = self.net(inputs)
-                if utils.get_num_args(operator) == 2:
+                if num_args == 2:
                     y = operator(inputs, outputs)
-                elif utils.get_num_args(operator) == 3:
+                elif num_args == 3:
                     # TODO: Paddle backend Implementation of Auxiliary variables.
                     # y = operator(inputs, outputs, paddle.to_tensor(aux_vars))
                     raise NotImplementedError(
                         "Model.predict() with auxiliary variable hasn't been implemented "
                         "for backend paddle."
                     )
-                y = utils.to_numpy(y)            
+                y = utils.to_numpy(y)
         callbacks.on_predict_end()
         return y
 

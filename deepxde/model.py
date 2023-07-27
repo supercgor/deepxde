@@ -4,6 +4,7 @@ import pickle
 from collections import OrderedDict
 
 import numpy as np
+import pandas as pd
 
 from . import config
 from . import display
@@ -1235,3 +1236,14 @@ class LossHistory:
             metrics_test = self.metrics_test[-1]
         self.loss_test.append(loss_test)
         self.metrics_test.append(metrics_test)
+        
+    def to_pandas(self):
+        dic = {}
+        dic['step'] = self.steps
+        for i in range(len(self.loss_train[0])):
+            dic[f"loss_train{i}"] = [loss[i] for loss in self.loss_train]
+        for i in range(len(self.loss_test[0])):
+            dic[f"loss_test{i}"] = [loss[i] for loss in self.loss_test]
+        for i in range(len(self.metrics_test[0])):
+            dic[f"metrics_test{i}"] = [metric[i] for metric in self.metrics_test]
+        return pd.DataFrame(dic)

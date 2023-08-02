@@ -1240,10 +1240,17 @@ class LossHistory:
     def to_pandas(self):
         dic = {}
         dic['step'] = self.steps
+        best = {"step": "best"}
         for i in range(len(self.loss_train[0])):
             dic[f"loss_train{i}"] = [loss[i] for loss in self.loss_train]
+            best[f"loss_train{i}"] = min(dic[f"loss_train{i}"])
         for i in range(len(self.loss_test[0])):
             dic[f"loss_test{i}"] = [loss[i] for loss in self.loss_test]
+            best[f"loss_test{i}"] = min(dic[f"loss_test{i}"])
         for i in range(len(self.metrics_test[0])):
             dic[f"metrics_test{i}"] = [metric[i] for metric in self.metrics_test]
-        return pd.DataFrame(dic)
+            best[f"metrics_test{i}"] = min(dic[f"metrics_test{i}"])
+        
+        df = pd.DataFrame(dic)
+        best_df = pd.DataFrame(best, index = [0])
+        return pd.concat([df, best_df], ignore_index=True)

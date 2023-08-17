@@ -1,6 +1,7 @@
 __all__ = ["LossHistory", "Model", "TrainState"]
 
 import pickle
+import warnings
 from collections import OrderedDict
 
 import numpy as np

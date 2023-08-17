@@ -564,6 +564,8 @@ class Model:
         self,
         iterations=None,
         batch_size=None,
+        train_batch_size=None,
+        test_batch_size=None,
         display_every=1000,
         disregard_previous_best=False,
         callbacks=None,
@@ -574,10 +576,8 @@ class Model:
         """Trains the model.
 
         Args:
-            iterations (Integer): Number of iterations to train the model, i.e., number
-                of times the network weights are updated.
-            batch_size: Integer, tuple, or ``None``.
-
+            iterations (int): Number of iterations to train the model, i.e., number of times the network weights are updated.
+            batch_size (int | tuple, optional): Batch size for training and testing.
                 - If you solve PDEs via ``dde.data.PDE`` or ``dde.data.TimePDE``, do not use `batch_size`, and instead use
                   `dde.callbacks.PDEPointResampler
                   <https://deepxde.readthedocs.io/en/latest/modules/deepxde.html#deepxde.callbacks.PDEPointResampler>`_,
@@ -586,23 +586,29 @@ class Model:
                   then it is the batch size for the branch input; if you want to also use mini-batch for the trunk net input,
                   set `batch_size` as a tuple, where the fist number is the batch size for the branch net input
                   and the second number is the batch size for the trunk net input.
-            display_every (Integer): Print the loss and metrics every this steps.
-            disregard_previous_best: If ``True``, disregard the previous saved best
-                model.
-            callbacks: List of ``dde.callbacks.Callback`` instances. List of callbacks
-                to apply during training.
-            model_restore_path (String): Path where parameters were previously saved.
-            model_save_path (String): Prefix of filenames created for the checkpoint.
-            epochs (Integer): Deprecated alias to `iterations`. This will be removed in
-                a future version.
+            train_batch_size (int | tuple, optional): Same as `batch_size`, but only used for training.
+            test_batch_size (int, optional): Same as `batch_size`, but only used for testing. Not supported for tuple.
+            display_every (int, optional): Print the loss and metrics every this steps.
+            disregard_previous_best (bool, optional): If ``True``, disregard the previous saved best model.
+            callbacks (list[dde.callbacks.Callback], optional): List of callbacks to apply during training.
+            model_restore_path (str, optional): Path where parameters were previously saved.
+            model_save_path (str, optional): Prefix of filenames created for the checkpoint.
+            epochs (int): Deprecated alias to `iterations`. This will be removed in a future version.
+
+        Returns:
+            tuple(TrainState, LossHistory): The training state and loss history.
         """
         if iterations is None and epochs is not None:
-            print(
-                "Warning: epochs is deprecated and will be removed in a future version."
-                " Use iterations instead."
+            warnings.warn(
+                "Warning: epochs is deprecated and will be removed in a future version.\n Use iterations instead."
             )
             iterations = epochs
         self.batch_size = batch_size
+        self.train_batch_size = train_batch_size or batch_size
+        if isinstance(batch_size, (tuple, list)):
+            self.test_batch_size = test_batch_size or batch_size[0]
+        else:
+            self.test_batch_size = test_batch_size or batch_size
         self.callbacks = CallbackList(callbacks=callbacks)
         self.callbacks.set_model(self)
         if disregard_previous_best:
@@ -623,7 +629,9 @@ class Model:
         if config.rank == 0:
             print("Training model...\n")
         self.stop_training = False
-        self.train_state.set_data_train(*self.data.train_next_batch(self.batch_size))
+        self.train_state.set_data_train(
+            *self.data.train_next_batch(self.train_batch_size)
+        )
         self.train_state.set_data_test(*self.data.test())
         self._test()
         self.callbacks.on_train_begin()
@@ -811,21 +819,68 @@ class Model:
 
     def _test(self):
         # TODO Now only print the training loss in rank 0. The correct way is to print the average training loss of all ranks.
-        (
-            self.train_state.y_pred_train,
-            self.train_state.loss_train,
-        ) = self._outputs_losses(
+        total_num = self.train_state.y_test.shape[0]
+        if self.test_batch_size is None:
+            X_test = [self.train_state.X_test]
+            y_test = [self.train_state.y_test]
+            test_aux_vars = [self.train_state.test_aux_vars]
+        else:
+            # Split the test data into batches
+            split_indices = list(
+                range(self.test_batch_size, total_num, self.test_batch_size)
+            )
+            batch_num = len(split_indices) + 1
+            if isinstance(self.train_state.X_test, (list, tuple)):
+                # for deeponet, the input is a list of tensors
+                X_test = tuple(
+                    zip(
+                        *map(
+                            lambda x: np.array_split(x, split_indices, 0)
+                            if x.shape[0] == total_num
+                            else [x] * batch_num,
+                            self.train_state.X_test,
+                        )
+                    )
+                )
+            else:
+                # normal case
+                X_test = np.array_split(self.train_state.X_test, split_indices, 0)
+            y_test = np.array_split(self.train_state.y_test, split_indices, 0)
+            if self.train_state.test_aux_vars is not None:
+                test_aux_vars = np.array_split(
+                    self.train_state.test_aux_vars, split_indices, 0
+                )
+            else:
+                test_aux_vars = [None] * len(X_test)
+
+        y_pred_train, loss_train = self._outputs_losses(
             True,
             self.train_state.X_train,
             self.train_state.y_train,
             self.train_state.train_aux_vars,
         )
-        self.train_state.y_pred_test, self.train_state.loss_test = self._outputs_losses(
-            False,
-            self.train_state.X_test,
-            self.train_state.y_test,
-            self.train_state.test_aux_vars,
+
+        y_pred_test, loss_test = [], []
+        for bX_test, by_test, btest_aux_vars in zip(X_test, y_test, test_aux_vars):
+            by_pred_test, bloss_test = self._outputs_losses(
+                False, bX_test, by_test, btest_aux_vars
+            )
+            y_pred_test.append(by_pred_test)
+            loss_test.append(bloss_test * by_test.shape[0])
+
+        y_pred_test = np.concatenate(y_pred_test, 0)
+        loss_test = np.sum(loss_test, 0) / total_num
+
+        self.train_state.y_pred_train, self.train_state.loss_train = (
+            y_pred_train,
+            loss_train,
         )
+        self.train_state.y_pred_test, self.train_state.loss_test = (
+            y_pred_test,
+            loss_test,
+        )
+
+        assert self.metrics is not None, "Make sure you have compiled the model."
 
         if isinstance(self.train_state.y_test, (list, tuple)):
             self.train_state.metrics_test = [

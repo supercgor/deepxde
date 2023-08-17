@@ -820,7 +820,12 @@ class Model:
 
     def _test(self):
         # TODO Now only print the training loss in rank 0. The correct way is to print the average training loss of all ranks.
-        total_num = self.train_state.y_test.shape[0]
+        if self.train_state.y_test is not None:
+            total_num = self.train_state.y_test.shape[0]
+        elif isinstance(self.train_state.X_test, (list, tuple)):
+            total_num = self.train_state.X_test[0].shape[0]
+        else:
+            total_num = self.train_state.X_test.shape[0]
         if self.test_batch_size is None:
             X_test = [self.train_state.X_test]
             y_test = [self.train_state.y_test]
@@ -846,13 +851,13 @@ class Model:
             else:
                 # normal case
                 X_test = np.array_split(self.train_state.X_test, split_indices, 0)
-            y_test = np.array_split(self.train_state.y_test, split_indices, 0)
+            y_test = np.array_split(self.train_state.y_test, split_indices, 0) if self.train_state.y_test is not None else [None] * batch_num
             if self.train_state.test_aux_vars is not None:
                 test_aux_vars = np.array_split(
                     self.train_state.test_aux_vars, split_indices, 0
                 )
             else:
-                test_aux_vars = [None] * len(X_test)
+                test_aux_vars = [None] * batch_num
 
         y_pred_train, loss_train = self._outputs_losses(
             True,
@@ -867,7 +872,7 @@ class Model:
                 False, bX_test, by_test, btest_aux_vars
             )
             y_pred_test.append(by_pred_test)
-            loss_test.append(bloss_test * by_test.shape[0])
+            loss_test.append(bloss_test * by_pred_test.shape[0])
 
         y_pred_test = np.concatenate(y_pred_test, 0)
         loss_test = np.sum(loss_test, 0) / total_num

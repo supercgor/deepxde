@@ -297,7 +297,10 @@ class Model:
             self.net.train(mode=training)
             if isinstance(inputs, tuple):
                 inputs = tuple(
-                    map(lambda x: torch.as_tensor(x, dtype=dtype).requires_grad_(), inputs)
+                    map(
+                        lambda x: torch.as_tensor(x, dtype=dtype).requires_grad_(),
+                        inputs,
+                    )
                 )
             else:
                 inputs = torch.as_tensor(inputs, dtype=dtype)
@@ -564,14 +567,14 @@ class Model:
                 self.params, self.opt_state, inputs, targets
             )
             self.net.params, self.external_trainable_variables = self.params
-    
+
     @utils.timing
     def train(
         self,
-        iterations = None,
-        batch_size = None,
-        train_batch_size = None,
-        test_batch_size = None,
+        iterations=None,
+        batch_size=None,
+        train_batch_size=None,
+        test_batch_size=None,
         display_every=1000,
         disregard_previous_best=False,
         callbacks=None,
@@ -600,7 +603,7 @@ class Model:
             model_restore_path (str, optional): Path where parameters were previously saved.
             model_save_path (str, optional): Prefix of filenames created for the checkpoint.
             epochs (int): Deprecated alias to `iterations`. This will be removed in a future version.
-            
+
         Returns:
             tuple(TrainState, LossHistory): The training state and loss history.
         """
@@ -635,7 +638,9 @@ class Model:
         if config.rank == 0:
             print("Training model...\n")
         self.stop_training = False
-        self.train_state.set_data_train(*self.data.train_next_batch(self.train_batch_size))
+        self.train_state.set_data_train(
+            *self.data.train_next_batch(self.train_batch_size)
+        )
         self.train_state.set_data_test(*self.data.test())
         self._test()
         self.callbacks.on_train_begin()
@@ -717,7 +722,9 @@ class Model:
                         )
                         cb.file.flush()
 
-        self.train_state.set_data_train(*self.data.train_next_batch(self.train_batch_size))
+        self.train_state.set_data_train(
+            *self.data.train_next_batch(self.train_batch_size)
+        )
         feed_dict = self.net.feed_dict(
             True,
             self.train_state.X_train,
@@ -830,17 +837,30 @@ class Model:
             test_aux_vars = [self.train_state.test_aux_vars]
         else:
             # Split the test data into batches
-            split_indices = list(range(self.test_batch_size, total_num, self.test_batch_size))
+            split_indices = list(
+                range(self.test_batch_size, total_num, self.test_batch_size)
+            )
             batch_num = len(split_indices) + 1
             if isinstance(self.train_state.X_test, (list, tuple)):
                 # for deeponet, the input is a list of tensors
-                X_test = tuple(zip(*map(lambda x: np.array_split(x, split_indices, 0) if x.shape[0] == total_num else [x] * batch_num, self.train_state.X_test)))
+                X_test = tuple(
+                    zip(
+                        *map(
+                            lambda x: np.array_split(x, split_indices, 0)
+                            if x.shape[0] == total_num
+                            else [x] * batch_num,
+                            self.train_state.X_test,
+                        )
+                    )
+                )
             else:
                 # normal case
                 X_test = np.array_split(self.train_state.X_test, split_indices, 0)
             y_test = np.array_split(self.train_state.y_test, split_indices, 0)
             if self.train_state.test_aux_vars is not None:
-                test_aux_vars = np.array_split(self.train_state.test_aux_vars, split_indices, 0)
+                test_aux_vars = np.array_split(
+                    self.train_state.test_aux_vars, split_indices, 0
+                )
             else:
                 test_aux_vars = [None] * len(X_test)
 
@@ -858,15 +878,21 @@ class Model:
             )
             y_pred_test.append(by_pred_test)
             loss_test.append(bloss_test * by_test.shape[0])
-        
+
         y_pred_test = np.concatenate(y_pred_test, 0)
         loss_test = np.sum(loss_test, 0) / total_num
 
-        self.train_state.y_pred_train, self.train_state.loss_train = y_pred_train, loss_train
-        self.train_state.y_pred_test, self.train_state.loss_test = y_pred_test, loss_test
+        self.train_state.y_pred_train, self.train_state.loss_train = (
+            y_pred_train,
+            loss_train,
+        )
+        self.train_state.y_pred_test, self.train_state.loss_test = (
+            y_pred_test,
+            loss_test,
+        )
 
         assert self.metrics is not None, "Make sure you have compiled the model."
-        
+
         if isinstance(self.train_state.y_test, (list, tuple)):
             self.train_state.metrics_test = [
                 m(self.train_state.y_test[i], self.train_state.y_pred_test[i])
@@ -895,7 +921,15 @@ class Model:
         if config.rank == 0:
             display.training_display(self.train_state)
 
-    def predict(self, x, aux_vars = None, operator=None, callbacks=None, batch_size=None, grad_for_each = False):
+    def predict(
+        self,
+        x,
+        aux_vars=None,
+        operator=None,
+        callbacks=None,
+        batch_size=None,
+        grad_for_each=False,
+    ):
         """Generates predictions for the input samples. If `operator` is ``None``,
         returns the network output, otherwise returns the output of the `operator`.
 
@@ -920,10 +954,10 @@ class Model:
             x = tuple(np.asarray(xi, dtype=config.real(np)) for xi in x)
         else:
             x = np.asarray(x, dtype=config.real(np))
-            
+
         if aux_vars is not None:
             aux_vars = np.asarray(aux_vars, dtype=config.real(np))
-            
+
         callbacks = CallbackList(callbacks=callbacks)
         callbacks.set_model(self)
         callbacks.on_predict_begin()
@@ -933,33 +967,44 @@ class Model:
         total_num = x[0].shape[0]
         isCartesianProd = any(xi.shape[0] != total_num for xi in x)
         if isCartesianProd and not grad_for_each and operator is not None:
-            warnings.warn("CartesianProd detected, autograd should be done on each batch sample. Set grad_for_each=True.")
-        
+            warnings.warn(
+                "CartesianProd detected, autograd should be done on each batch sample. Set grad_for_each=True."
+            )
+
         if batch_size is None:
             ins = [x]
             aux_vars = [aux_vars]
         else:
             split_indices = list(range(batch_size, total_num, batch_size))
             batch_num = len(split_indices) + 1
-            ins = list(zip(*map(lambda inputs: np.array_split(inputs, split_indices, 0) if inputs.shape[0] == total_num else [inputs] * batch_num, x)))
+            ins = list(
+                zip(
+                    *map(
+                        lambda inputs: np.array_split(inputs, split_indices, 0)
+                        if inputs.shape[0] == total_num
+                        else [inputs] * batch_num,
+                        x,
+                    )
+                )
+            )
             if aux_vars is None:
                 aux_vars = [None] * len(ins)
             else:
                 aux_vars = np.array_split(aux_vars, split_indices, 0)
-        
+
         outs = []
-            
+
         for bx, aux_var in zip(ins, aux_vars):
             if operator is None:
                 outs.append(self._outputs(False, bx))
-                
-            # For CartesianProd, we have to do autograd on each batch sample. The reason is `autograd` does not support broadcasting. The gradient output is forced to be shaped the same as input. 
-            
+
+            # For CartesianProd, we have to do autograd on each batch sample. The reason is `autograd` does not support broadcasting. The gradient output is forced to be shaped the same as input.
+
             elif not grad_for_each:
                 num_args = utils.get_num_args(operator)
                 if num_args == 3:
                     if aux_var is None and hasattr(self.data, "auxiliary_var_fn"):
-                        aux_var = self.data.auxiliary_var_fn(bx).astype(config.real(np))    
+                        aux_var = self.data.auxiliary_var_fn(bx).astype(config.real(np))
                 if backend_name == "tensorflow.compat.v1":
                     if num_args == 2:
                         op = operator(self.net.inputs, self.net.outputs)
@@ -968,7 +1013,9 @@ class Model:
                         op = operator(
                             self.net.inputs, self.net.outputs, self.net.auxiliary_vars
                         )
-                        feed_dict = self.net.feed_dict(False, bx, auxiliary_vars=aux_var)
+                        feed_dict = self.net.feed_dict(
+                            False, bx, auxiliary_vars=aux_var
+                        )
                     y = self.sess.run(op, feed_dict=feed_dict)
                 elif backend_name == "tensorflow":
                     if num_args == 2:
@@ -1020,14 +1067,16 @@ class Model:
                         )
                     y = utils.to_numpy(y)
                 outs.append(y)
-            else: # CartesianProd, do autograd on each batch sample.
+            else:  # CartesianProd, do autograd on each batch sample.
                 num_args = utils.get_num_args(operator)
                 if num_args == 3:
                     if aux_var is None:
-                        #TODO, this is a hacky way to get aux_var for CartesianProd, we need to find a better way to do this.
-                        raise ValueError("aux_var must be provided for CartesianProd if operator takes 3 arguments.")
+                        # TODO, this is a hacky way to get aux_var for CartesianProd, we need to find a better way to do this.
+                        raise ValueError(
+                            "aux_var must be provided for CartesianProd if operator takes 3 arguments."
+                        )
                 if backend_name == "tensorflow.compat.v1":
-                    #TODO, this might not work in CartesianProd.
+                    # TODO, this might not work in CartesianProd.
                     if num_args == 2:
                         op = operator(self.net.inputs, self.net.outputs)
                         feed_dict = self.net.feed_dict(False, bx)
@@ -1035,10 +1084,12 @@ class Model:
                         op = operator(
                             self.net.inputs, self.net.outputs, self.net.auxiliary_vars
                         )
-                        feed_dict = self.net.feed_dict(False, bx, auxiliary_vars=aux_var)
+                        feed_dict = self.net.feed_dict(
+                            False, bx, auxiliary_vars=aux_var
+                        )
                     y = self.sess.run(op, feed_dict=feed_dict)
                 elif backend_name == "tensorflow":
-                    #TODO, this might not work in CartesianProd.
+                    # TODO, this might not work in CartesianProd.
                     if num_args == 2:
 
                         @tf.function
@@ -1057,10 +1108,12 @@ class Model:
                     y = utils.to_numpy(y)
                 elif backend_name == "pytorch":
                     self.net.eval()
-                    inputs = tuple(map(lambda x: torch.as_tensor(x).requires_grad_(), bx))
+                    inputs = tuple(
+                        map(lambda x: torch.as_tensor(x).requires_grad_(), bx)
+                    )
                     outputs = self.net(inputs)
                     if aux_var is not None:
-                        aux_var = torch.as_tensor(aux_var)[...,None]
+                        aux_var = torch.as_tensor(aux_var)[..., None]
                     branchs = inputs[0].unsqueeze(-1)
                     outputs = outputs.unsqueeze(-1)
                     ys = []
@@ -1074,10 +1127,10 @@ class Model:
                             y = operator((branch, inputs[1]), out, aux).detach()
                             ys.append(y)
                             grad.clear()
-                    y = torch.stack(ys)[...,0]
+                    y = torch.stack(ys)[..., 0]
                     y = utils.to_numpy(y)
                 elif backend_name == "paddle":
-                    #TODO, this might not work in CartesianProd.
+                    # TODO, this might not work in CartesianProd.
                     self.net.eval()
                     inputs = paddle.to_tensor(bx, stop_gradient=False)
                     outputs = self.net(inputs)
@@ -1092,12 +1145,12 @@ class Model:
                         )
                     y = utils.to_numpy(y)
                 outs.append(y)
-                
+
         outs = np.concatenate(outs, 0)
         callbacks.on_predict_end()
         return outs
 
-    #TODO
+    # TODO
     # def evaluate(self, x, y, callbacks=None):
     #     """Returns the loss values & metrics values for the model in test mode."""
     #     raise NotImplementedError(
@@ -1308,10 +1361,10 @@ class LossHistory:
             metrics_test = self.metrics_test[-1]
         self.loss_test.append(loss_test)
         self.metrics_test.append(metrics_test)
-        
-    def to_pandas(self, best = True):
+
+    def to_pandas(self, best=True):
         dic = {}
-        dic['step'] = self.steps
+        dic["step"] = self.steps
         best = {"step": "best"}
         for i in range(len(self.loss_train[0])):
             dic[f"loss_train{i}"] = [loss[i] for loss in self.loss_train]
@@ -1322,10 +1375,10 @@ class LossHistory:
         for i in range(len(self.metrics_test[0])):
             dic[f"metrics_test{i}"] = [metric[i] for metric in self.metrics_test]
             best[f"metrics_test{i}"] = min(dic[f"metrics_test{i}"])
-        
+
         df = pd.DataFrame(dic)
         if best:
-            best_df = pd.DataFrame(best, index = [0])
+            best_df = pd.DataFrame(best, index=[0])
             return pd.concat([df, best_df], ignore_index=True)
         else:
             return df

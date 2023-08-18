@@ -2,6 +2,7 @@ __all__ = ["LossHistory", "Model", "TrainState"]
 
 import pickle
 from collections import OrderedDict
+from typing import Union, List, Tuple, Any, Callable
 
 import numpy as np
 
@@ -12,12 +13,13 @@ from . import losses as losses_module
 from . import metrics as metrics_module
 from . import optimizers
 from . import utils
-from .backend import backend_name, tf, torch, jax, paddle
+from .backend import backend_name, tf, torch, jax, paddle, Variable
 from .callbacks import CallbackList
+from .data import Data
+from .types import _NN, _Optimizer, _Tensor, _TensorOrTensors, _int, _float, _bool, Number
 from .utils import list_to_str
 
-
-class Model:
+class Model():
     """A ``Model`` trains a ``NN`` on a ``Data``.
 
     Args:
@@ -25,7 +27,7 @@ class Model:
         net: ``deepxde.nn.NN`` instance.
     """
 
-    def __init__(self, data, net):
+    def __init__(self, data: Data, net: _NN):
         self.data = data
         self.net = net
 
@@ -57,27 +59,26 @@ class Model:
     @utils.timing
     def compile(
         self,
-        optimizer,
-        lr=None,
-        loss="MSE",
-        metrics=None,
-        decay=None,
-        loss_weights=None,
-        external_trainable_variables=None,
-    ):
-        """Configures the model for training.
+        optimizer: _Optimizer,
+        lr: Union[Number, None] = None,
+        loss: Union[List[str], str] = "MSE",
+        metrics: Union[List[str], str, None] = None,
+        decay: Union[Tuple[str, Number, Any], None]= None,
+        loss_weights: Union[List[Number], None] = None,
+        external_trainable_variables: Union[List[Variable], Variable, None] = None,
+    ) -> None:
+        """
+        Configures the model for training.
 
         Args:
-            optimizer: String name of an optimizer, or a backend optimizer class
-                instance.
-            lr (float): The learning rate. For L-BFGS, use
-                ``dde.optimizers.set_LBFGS_options`` to set the hyperparameters.
-            loss: If the same loss is used for all errors, then `loss` is a String name
+            optimizer (_Optimizer): String name of an optimizer, or a backend optimizer class instance.
+            lr (Number, optional): The learning rate. For L-BFGS, use ``dde.optimizers.set_LBFGS_options`` to set the hyperparameters.
+            loss (List[str] | str, optional): If the same loss is used for all errors, then `loss` is a String name
                 of a loss function or a loss function. If different errors use
                 different losses, then `loss` is a list whose size is equal to the
                 number of errors.
-            metrics: List of metrics to be evaluated by the model during training.
-            decay (tuple): Name and parameters of decay to the initial learning rate.
+            metrics (List[str] | str, optional): List of metrics to be evaluated by the model during training.
+            decay (Tuple[str, Number, Any], optional): Name and parameters of decay to the initial learning rate.
                 One of the following options:
 
                 - For backend TensorFlow 1.x:
@@ -104,11 +105,11 @@ class Model:
                       <https://www.paddlepaddle.org.cn/documentation/docs/en/develop/api/paddle/optimizer/lr/InverseTimeDecay_en.html>`_:
                       ("inverse time", gamma)
 
-            loss_weights: A list specifying scalar coefficients (Python floats) to
+            loss_weights (List[Number], optional): A list specifying scalar coefficients (Python floats) to
                 weight the loss contributions. The loss value that will be minimized by
                 the model will then be the weighted sum of all individual losses,
                 weighted by the `loss_weights` coefficients.
-            external_trainable_variables: A trainable ``dde.Variable`` object or a list
+            external_trainable_variables (List[Variable] | Variable, optional): A trainable ``dde.Variable`` object or a list
                 of trainable ``dde.Variable`` objects. The unknown parameters in the
                 physics systems that need to be recovered. If the backend is
                 tensorflow.compat.v1, `external_trainable_variables` is ignored, and all
@@ -147,7 +148,7 @@ class Model:
         metrics = metrics or []
         self.metrics = [metrics_module.get(m) for m in metrics]
 
-    def _compile_tensorflow_compat_v1(self, lr, loss_fn, decay, loss_weights):
+    def _compile_tensorflow_compat_v1(self, lr: Union[Number, None], loss_fn: Union[List[Callable[[Any], _Tensor]], Callable[[Any], _Tensor]], decay: Union[Tuple[str, Number, Any], None], loss_weights: Union[List[Number], None]):
         """tensorflow.compat.v1"""
         if not self.net.built:
             self.net.build()
@@ -194,7 +195,7 @@ class Model:
             total_loss, self.opt_name, learning_rate=lr, decay=decay
         )
 
-    def _compile_tensorflow(self, lr, loss_fn, decay, loss_weights):
+    def _compile_tensorflow(self, lr: Union[Number, None], loss_fn: Union[List[Callable[[Any], _Tensor]], Callable[[Any], _Tensor]], decay: Union[Tuple[str, Number, Any], None], loss_weights: Union[List[Number], None]):
         """tensorflow"""
 
         @tf.function(jit_compile=config.xla_jit)
@@ -267,7 +268,7 @@ class Model:
             else train_step_tfp
         )
 
-    def _compile_pytorch(self, lr, loss_fn, decay, loss_weights):
+    def _compile_pytorch(self, lr: Union[Number, None], loss_fn: Union[List[Callable[[Any], _Tensor]], Callable[[Any], _Tensor]], decay: Union[Tuple[str, Number, Any], None], loss_weights: Union[List[Number], None]):
         """pytorch"""
 
         def outputs(training, inputs):
@@ -364,7 +365,7 @@ class Model:
         self.outputs_losses_test = outputs_losses_test
         self.train_step = train_step
 
-    def _compile_jax(self, lr, loss_fn, decay, loss_weights):
+    def _compile_jax(self, lr: Union[Number, None], loss_fn: Union[List[Callable[[Any], _Tensor]], Callable[[Any], _Tensor]], decay: Union[Tuple[str, Number, Any], None], loss_weights: Union[List[Number], None]):
         """jax"""
         # Initialize the network's parameters
         key = jax.random.PRNGKey(config.jax_random_seed)
@@ -421,7 +422,7 @@ class Model:
         self.outputs_losses_test = outputs_losses_test
         self.train_step = train_step
 
-    def _compile_paddle(self, lr, loss_fn, decay, loss_weights):
+    def _compile_paddle(self, lr: Union[Number, None], loss_fn: Union[List[Callable[[Any], _Tensor]], Callable[[Any], _Tensor]], decay: Union[Tuple[str, Number, Any], None], loss_weights: Union[List[Number], None]):
         """paddle"""
 
         def outputs(training, inputs):

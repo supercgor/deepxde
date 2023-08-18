@@ -9,6 +9,7 @@ if Version(paddle.__version__) != Version("0.0.0"):
 if paddle.device.is_compiled_with_cuda():
     paddle.device.set_device("gpu")
 
+
 lib = paddle
 
 

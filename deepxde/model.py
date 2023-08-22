@@ -1,11 +1,9 @@
 __all__ = ["LossHistory", "Model", "TrainState"]
 
 import pickle
-import warnings
 from collections import OrderedDict
 
 import numpy as np
-import pandas as pd
 
 from . import config
 from . import display
@@ -14,7 +12,6 @@ from . import losses as losses_module
 from . import metrics as metrics_module
 from . import optimizers
 from . import utils
-
 from .backend import backend_name, tf, torch, jax, paddle
 from .callbacks import CallbackList
 from .utils import list_to_str
@@ -34,8 +31,6 @@ class Model:
 
         self.opt_name = None
         self.batch_size = None
-        self.train_batch_size = None
-        self.test_batch_size = None
         self.callbacks = None
         self.metrics = None
         self.external_trainable_variables = []
@@ -291,24 +286,20 @@ class Model:
 
         def outputs_losses(training, inputs, targets, auxiliary_vars, losses_fn):
             self.net.auxiliary_vars = None
-            dtype = torch.get_default_dtype()
             if auxiliary_vars is not None:
-                self.net.auxiliary_vars = torch.as_tensor(auxiliary_vars, dtype=dtype)
+                self.net.auxiliary_vars = torch.as_tensor(auxiliary_vars)
             self.net.train(mode=training)
             if isinstance(inputs, tuple):
                 inputs = tuple(
-                    map(
-                        lambda x: torch.as_tensor(x, dtype=dtype).requires_grad_(),
-                        inputs,
-                    )
+                    map(lambda x: torch.as_tensor(x).requires_grad_(), inputs)
                 )
             else:
-                inputs = torch.as_tensor(inputs, dtype=dtype)
+                inputs = torch.as_tensor(inputs)
                 inputs.requires_grad_()
             outputs_ = self.net(inputs)
             # Data losses
             if targets is not None:
-                targets = torch.as_tensor(targets, dtype=dtype)
+                targets = torch.as_tensor(targets)
             losses = losses_fn(targets, outputs_, loss_fn, inputs, self)
             if not isinstance(losses, list):
                 losses = [losses]
@@ -573,8 +564,6 @@ class Model:
         self,
         iterations=None,
         batch_size=None,
-        train_batch_size=None,
-        test_batch_size=None,
         display_every=1000,
         disregard_previous_best=False,
         callbacks=None,
@@ -585,8 +574,10 @@ class Model:
         """Trains the model.
 
         Args:
-            iterations (int): Number of iterations to train the model, i.e., number of times the network weights are updated.
-            batch_size (int | tuple, optional): Batch size for training and testing.
+            iterations (Integer): Number of iterations to train the model, i.e., number
+                of times the network weights are updated.
+            batch_size: Integer, tuple, or ``None``.
+
                 - If you solve PDEs via ``dde.data.PDE`` or ``dde.data.TimePDE``, do not use `batch_size`, and instead use
                   `dde.callbacks.PDEPointResampler
                   <https://deepxde.readthedocs.io/en/latest/modules/deepxde.html#deepxde.callbacks.PDEPointResampler>`_,
@@ -595,29 +586,23 @@ class Model:
                   then it is the batch size for the branch input; if you want to also use mini-batch for the trunk net input,
                   set `batch_size` as a tuple, where the fist number is the batch size for the branch net input
                   and the second number is the batch size for the trunk net input.
-            train_batch_size (int | tuple, optional): Same as `batch_size`, but only used for training.
-            test_batch_size (int, optional): Same as `batch_size`, but only used for testing. Not supported for tuple.
-            display_every (int, optional): Print the loss and metrics every this steps.
-            disregard_previous_best (bool, optional): If ``True``, disregard the previous saved best model.
-            callbacks (list[dde.callbacks.Callback], optional): List of callbacks to apply during training.
-            model_restore_path (str, optional): Path where parameters were previously saved.
-            model_save_path (str, optional): Prefix of filenames created for the checkpoint.
-            epochs (int): Deprecated alias to `iterations`. This will be removed in a future version.
-
-        Returns:
-            tuple(TrainState, LossHistory): The training state and loss history.
+            display_every (Integer): Print the loss and metrics every this steps.
+            disregard_previous_best: If ``True``, disregard the previous saved best
+                model.
+            callbacks: List of ``dde.callbacks.Callback`` instances. List of callbacks
+                to apply during training.
+            model_restore_path (String): Path where parameters were previously saved.
+            model_save_path (String): Prefix of filenames created for the checkpoint.
+            epochs (Integer): Deprecated alias to `iterations`. This will be removed in
+                a future version.
         """
         if iterations is None and epochs is not None:
-            warnings.warn(
-                "Warning: epochs is deprecated and will be removed in a future version.\n Use iterations instead."
+            print(
+                "Warning: epochs is deprecated and will be removed in a future version."
+                " Use iterations instead."
             )
             iterations = epochs
         self.batch_size = batch_size
-        self.train_batch_size = train_batch_size or batch_size
-        if isinstance(batch_size, (tuple, list)):
-            self.test_batch_size = test_batch_size or batch_size[0]
-        else:
-            self.test_batch_size = test_batch_size or batch_size
         self.callbacks = CallbackList(callbacks=callbacks)
         self.callbacks.set_model(self)
         if disregard_previous_best:
@@ -638,9 +623,7 @@ class Model:
         if config.rank == 0:
             print("Training model...\n")
         self.stop_training = False
-        self.train_state.set_data_train(
-            *self.data.train_next_batch(self.train_batch_size)
-        )
+        self.train_state.set_data_train(*self.data.train_next_batch(self.batch_size))
         self.train_state.set_data_test(*self.data.test())
         self._test()
         self.callbacks.on_train_begin()
@@ -672,7 +655,7 @@ class Model:
             self.callbacks.on_batch_begin()
 
             self.train_state.set_data_train(
-                *self.data.train_next_batch(self.train_batch_size)
+                *self.data.train_next_batch(self.batch_size)
             )
             self._train_step(
                 self.train_state.X_train,
@@ -722,9 +705,7 @@ class Model:
                         )
                         cb.file.flush()
 
-        self.train_state.set_data_train(
-            *self.data.train_next_batch(self.train_batch_size)
-        )
+        self.train_state.set_data_train(*self.data.train_next_batch(self.batch_size))
         feed_dict = self.net.feed_dict(
             True,
             self.train_state.X_train,
@@ -750,7 +731,7 @@ class Model:
         n_iter = 0
         while n_iter < optimizers.LBFGS_options["maxiter"]:
             self.train_state.set_data_train(
-                *self.data.train_next_batch(self.train_batch_size)
+                *self.data.train_next_batch(self.batch_size)
             )
             results = self.train_step(
                 self.train_state.X_train,
@@ -772,7 +753,7 @@ class Model:
             self.callbacks.on_batch_begin()
 
             self.train_state.set_data_train(
-                *self.data.train_next_batch(self.train_batch_size)
+                *self.data.train_next_batch(self.batch_size)
             )
             self._train_step(
                 self.train_state.X_train,
@@ -804,7 +785,7 @@ class Model:
             self.callbacks.on_batch_begin()
 
             self.train_state.set_data_train(
-                *self.data.train_next_batch(self.train_batch_size)
+                *self.data.train_next_batch(self.batch_size)
             )
             self._train_step(
                 self.train_state.X_train,
@@ -830,68 +811,21 @@ class Model:
 
     def _test(self):
         # TODO Now only print the training loss in rank 0. The correct way is to print the average training loss of all ranks.
-        total_num = self.train_state.y_test.shape[0]
-        if self.test_batch_size is None:
-            X_test = [self.train_state.X_test]
-            y_test = [self.train_state.y_test]
-            test_aux_vars = [self.train_state.test_aux_vars]
-        else:
-            # Split the test data into batches
-            split_indices = list(
-                range(self.test_batch_size, total_num, self.test_batch_size)
-            )
-            batch_num = len(split_indices) + 1
-            if isinstance(self.train_state.X_test, (list, tuple)):
-                # for deeponet, the input is a list of tensors
-                X_test = tuple(
-                    zip(
-                        *map(
-                            lambda x: np.array_split(x, split_indices, 0)
-                            if x.shape[0] == total_num
-                            else [x] * batch_num,
-                            self.train_state.X_test,
-                        )
-                    )
-                )
-            else:
-                # normal case
-                X_test = np.array_split(self.train_state.X_test, split_indices, 0)
-            y_test = np.array_split(self.train_state.y_test, split_indices, 0)
-            if self.train_state.test_aux_vars is not None:
-                test_aux_vars = np.array_split(
-                    self.train_state.test_aux_vars, split_indices, 0
-                )
-            else:
-                test_aux_vars = [None] * len(X_test)
-
-        y_pred_train, loss_train = self._outputs_losses(
+        (
+            self.train_state.y_pred_train,
+            self.train_state.loss_train,
+        ) = self._outputs_losses(
             True,
             self.train_state.X_train,
             self.train_state.y_train,
             self.train_state.train_aux_vars,
         )
-
-        y_pred_test, loss_test = [], []
-        for bX_test, by_test, btest_aux_vars in zip(X_test, y_test, test_aux_vars):
-            by_pred_test, bloss_test = self._outputs_losses(
-                False, bX_test, by_test, btest_aux_vars
-            )
-            y_pred_test.append(by_pred_test)
-            loss_test.append(bloss_test * by_test.shape[0])
-
-        y_pred_test = np.concatenate(y_pred_test, 0)
-        loss_test = np.sum(loss_test, 0) / total_num
-
-        self.train_state.y_pred_train, self.train_state.loss_train = (
-            y_pred_train,
-            loss_train,
+        self.train_state.y_pred_test, self.train_state.loss_test = self._outputs_losses(
+            False,
+            self.train_state.X_test,
+            self.train_state.y_test,
+            self.train_state.test_aux_vars,
         )
-        self.train_state.y_pred_test, self.train_state.loss_test = (
-            y_pred_test,
-            loss_test,
-        )
-
-        assert self.metrics is not None, "Make sure you have compiled the model."
 
         if isinstance(self.train_state.y_test, (list, tuple)):
             self.train_state.metrics_test = [
@@ -921,236 +855,100 @@ class Model:
         if config.rank == 0:
             display.training_display(self.train_state)
 
-    def predict(
-        self,
-        x,
-        aux_vars=None,
-        operator=None,
-        callbacks=None,
-        batch_size=None,
-        grad_for_each=False,
-    ):
+    def predict(self, x, operator=None, callbacks=None):
         """Generates predictions for the input samples. If `operator` is ``None``,
         returns the network output, otherwise returns the output of the `operator`.
 
         Args:
-            x (np.ndarray): The network inputs. A Numpy array or a tuple of Numpy arrays.
-            aux_vars (np.ndarray, optional): To provide auxiliary variables manually.
-            operator (Callable[[Any], Any], optional): A function takes arguments (`inputs`, `outputs`) or (`inputs`,
+            x: The network inputs. A Numpy array or a tuple of Numpy arrays.
+            operator: A function takes arguments (`inputs`, `outputs`) or (`inputs`,
                 `outputs`, `auxiliary_variables`) and outputs a tensor. `inputs` and
                 `outputs` are the network input and output tensors, respectively.
                 `auxiliary_variables` is the output of `auxiliary_var_function(x)`
                 in `dde.data.PDE`. `operator` is typically chosen as the PDE (used to
                 define `dde.data.PDE`) to predict the PDE residual.
-            callbacks (list[dde.callbacks.Callback], optional): List of ``dde.callbacks.Callback`` instances. List of callbacks
+            callbacks: List of ``dde.callbacks.Callback`` instances. List of callbacks
                 to apply during prediction.
-            batch_size (int, optional): the batchsize used to predict, reduce the totally memory needed but may slow down the prediction.
-            grad_for_each (bool, optional): If ``True``, autograd is done on each batch sample. should be ``True`` for Cartesian product.
-
-        Returns:
-            np.ndarray: the network output or the output of the `operator`.
         """
         if isinstance(x, tuple):
             x = tuple(np.asarray(xi, dtype=config.real(np)) for xi in x)
         else:
             x = np.asarray(x, dtype=config.real(np))
-
-        if aux_vars is not None:
-            aux_vars = np.asarray(aux_vars, dtype=config.real(np))
-
         callbacks = CallbackList(callbacks=callbacks)
         callbacks.set_model(self)
         callbacks.on_predict_begin()
 
-        # If batch_size is not provided, use the test batch size.
-        batch_size = batch_size or self.test_batch_size
-        total_num = x[0].shape[0]
-        isCartesianProd = any(xi.shape[0] != total_num for xi in x)
-        if isCartesianProd and not grad_for_each and operator is not None:
-            warnings.warn(
-                "CartesianProd detected, autograd should be done on each batch sample. Set grad_for_each=True."
-            )
+        if operator is None:
+            y = self._outputs(False, x)
+            callbacks.on_predict_end()
+            return y
 
-        if batch_size is None:
-            ins = [x]
-            aux_vars = [aux_vars]
-        else:
-            split_indices = list(range(batch_size, total_num, batch_size))
-            batch_num = len(split_indices) + 1
-            ins = list(
-                zip(
-                    *map(
-                        lambda inputs: np.array_split(inputs, split_indices, 0)
-                        if inputs.shape[0] == total_num
-                        else [inputs] * batch_num,
-                        x,
-                    )
+        # operator is not None
+        if utils.get_num_args(operator) == 3:
+            aux_vars = self.data.auxiliary_var_fn(x).astype(config.real(np))
+        if backend_name == "tensorflow.compat.v1":
+            if utils.get_num_args(operator) == 2:
+                op = operator(self.net.inputs, self.net.outputs)
+                feed_dict = self.net.feed_dict(False, x)
+            elif utils.get_num_args(operator) == 3:
+                op = operator(
+                    self.net.inputs, self.net.outputs, self.net.auxiliary_vars
                 )
-            )
-            if aux_vars is None:
-                aux_vars = [None] * len(ins)
+                feed_dict = self.net.feed_dict(False, x, auxiliary_vars=aux_vars)
+            y = self.sess.run(op, feed_dict=feed_dict)
+        elif backend_name == "tensorflow":
+            if utils.get_num_args(operator) == 2:
+
+                @tf.function
+                def op(inputs):
+                    y = self.net(inputs)
+                    return operator(inputs, y)
+
+            elif utils.get_num_args(operator) == 3:
+
+                @tf.function
+                def op(inputs):
+                    y = self.net(inputs)
+                    return operator(inputs, y, aux_vars)
+
+            y = op(x)
+            y = utils.to_numpy(y)
+        elif backend_name == "pytorch":
+            self.net.eval()
+            if isinstance(x, tuple):
+                inputs = tuple(map(lambda x: torch.as_tensor(x).requires_grad_(), x))
             else:
-                aux_vars = np.array_split(aux_vars, split_indices, 0)
-
-        outs = []
-
-        for bx, aux_var in zip(ins, aux_vars):
-            if operator is None:
-                outs.append(self._outputs(False, bx))
-
-            # For CartesianProd, we have to do autograd on each batch sample. The reason is `autograd` does not support broadcasting. The gradient output is forced to be shaped the same as input.
-
-            elif not grad_for_each:
-                num_args = utils.get_num_args(operator)
-                if num_args == 3:
-                    if aux_var is None and hasattr(self.data, "auxiliary_var_fn"):
-                        aux_var = self.data.auxiliary_var_fn(bx).astype(config.real(np))
-                if backend_name == "tensorflow.compat.v1":
-                    if num_args == 2:
-                        op = operator(self.net.inputs, self.net.outputs)
-                        feed_dict = self.net.feed_dict(False, bx)
-                    elif num_args == 3:
-                        op = operator(
-                            self.net.inputs, self.net.outputs, self.net.auxiliary_vars
-                        )
-                        feed_dict = self.net.feed_dict(
-                            False, bx, auxiliary_vars=aux_var
-                        )
-                    y = self.sess.run(op, feed_dict=feed_dict)
-                elif backend_name == "tensorflow":
-                    if num_args == 2:
-
-                        @tf.function
-                        def op(inputs):
-                            y = self.net(inputs)
-                            return operator(inputs, y)
-
-                    elif num_args == 3:
-
-                        @tf.function
-                        def op(inputs):
-                            y = self.net(inputs)
-                            return operator(inputs, y, aux_var)
-
-                    y = op(bx)
-                    y = utils.to_numpy(y)
-                elif backend_name == "pytorch":
-                    self.net.eval()
-                    if isinstance(bx, (tuple, list)):
-                        inputs = tuple(
-                            map(lambda x: torch.as_tensor(x).requires_grad_(), bx)
-                        )
-                    else:
-                        inputs = torch.as_tensor(bx).requires_grad_()
-                    outputs = self.net(inputs)
-                    if num_args == 2:
-                        y = operator(inputs, outputs)
-                    elif num_args == 3:
-                        if aux_var is not None:
-                            aux_var = torch.as_tensor(aux_var)
-                        y = operator(inputs, outputs, aux_var)
-                    # Clear cached Jacobians and Hessians.
-                    grad.clear()
-                    y = utils.to_numpy(y)
-                elif backend_name == "paddle":
-                    self.net.eval()
-                    inputs = paddle.to_tensor(bx, stop_gradient=False)
-                    outputs = self.net(inputs)
-                    if num_args == 2:
-                        y = operator(inputs, outputs)
-                    elif num_args == 3:
-                        # TODO: Paddle backend Implementation of Auxiliary variables.
-                        # y = operator(inputs, outputs, paddle.to_tensor(aux_var))
-                        raise NotImplementedError(
-                            "Model.predict() with auxiliary variable hasn't been implemented "
-                            "for backend paddle."
-                        )
-                    y = utils.to_numpy(y)
-                outs.append(y)
-            else:  # CartesianProd, do autograd on each batch sample.
-                num_args = utils.get_num_args(operator)
-                if num_args == 3:
-                    if aux_var is None:
-                        # TODO, this is a hacky way to get aux_var for CartesianProd, we need to find a better way to do this.
-                        raise ValueError(
-                            "aux_var must be provided for CartesianProd if operator takes 3 arguments."
-                        )
-                if backend_name == "tensorflow.compat.v1":
-                    # TODO, this might not work in CartesianProd.
-                    if num_args == 2:
-                        op = operator(self.net.inputs, self.net.outputs)
-                        feed_dict = self.net.feed_dict(False, bx)
-                    elif num_args == 3:
-                        op = operator(
-                            self.net.inputs, self.net.outputs, self.net.auxiliary_vars
-                        )
-                        feed_dict = self.net.feed_dict(
-                            False, bx, auxiliary_vars=aux_var
-                        )
-                    y = self.sess.run(op, feed_dict=feed_dict)
-                elif backend_name == "tensorflow":
-                    # TODO, this might not work in CartesianProd.
-                    if num_args == 2:
-
-                        @tf.function
-                        def op(inputs):
-                            y = self.net(inputs)
-                            return operator(inputs, y)
-
-                    elif num_args == 3:
-
-                        @tf.function
-                        def op(inputs):
-                            y = self.net(inputs)
-                            return operator(inputs, y, aux_var)
-
-                    y = op(bx)
-                    y = utils.to_numpy(y)
-                elif backend_name == "pytorch":
-                    self.net.eval()
-                    inputs = tuple(
-                        map(lambda x: torch.as_tensor(x).requires_grad_(), bx)
-                    )
-                    outputs = self.net(inputs)
-                    if aux_var is not None:
-                        aux_var = torch.as_tensor(aux_var)[..., None]
-                    branchs = inputs[0].unsqueeze(-1)
-                    outputs = outputs.unsqueeze(-1)
-                    ys = []
-                    if num_args == 2:
-                        for branch, out in zip(branchs, outputs):
-                            y = operator((branch, inputs[1]), out).detach()
-                            ys.append(y)
-                            grad.clear()
-                    elif num_args == 3:
-                        for branch, out, aux in zip(branchs, outputs, aux_var):
-                            y = operator((branch, inputs[1]), out, aux).detach()
-                            ys.append(y)
-                            grad.clear()
-                    y = torch.stack(ys)[..., 0]
-                    y = utils.to_numpy(y)
-                elif backend_name == "paddle":
-                    # TODO, this might not work in CartesianProd.
-                    self.net.eval()
-                    inputs = paddle.to_tensor(bx, stop_gradient=False)
-                    outputs = self.net(inputs)
-                    if num_args == 2:
-                        y = operator(inputs, outputs)
-                    elif num_args == 3:
-                        # TODO: Paddle backend Implementation of Auxiliary variables.
-                        # y = operator(inputs, outputs, paddle.to_tensor(aux_var))
-                        raise NotImplementedError(
-                            "Model.predict() with auxiliary variable hasn't been implemented "
-                            "for backend paddle."
-                        )
-                    y = utils.to_numpy(y)
-                outs.append(y)
-
-        outs = np.concatenate(outs, 0)
+                inputs = torch.as_tensor(x).requires_grad_()
+            outputs = self.net(inputs)
+            if utils.get_num_args(operator) == 2:
+                y = operator(inputs, outputs)
+            elif utils.get_num_args(operator) == 3:
+                # TODO: Pytorch backend Implementation of Auxiliary variables.
+                # y = operator(inputs, outputs, torch.as_tensor(aux_vars))
+                raise NotImplementedError(
+                    "Model.predict() with auxiliary variable hasn't been implemented "
+                    "for backend pytorch."
+                )
+            # Clear cached Jacobians and Hessians.
+            grad.clear()
+            y = utils.to_numpy(y)
+        elif backend_name == "paddle":
+            self.net.eval()
+            inputs = paddle.to_tensor(x, stop_gradient=False)
+            outputs = self.net(inputs)
+            if utils.get_num_args(operator) == 2:
+                y = operator(inputs, outputs)
+            elif utils.get_num_args(operator) == 3:
+                # TODO: Paddle backend Implementation of Auxiliary variables.
+                # y = operator(inputs, outputs, paddle.to_tensor(aux_vars))
+                raise NotImplementedError(
+                    "Model.predict() with auxiliary variable hasn't been implemented "
+                    "for backend paddle."
+                )
+            y = utils.to_numpy(y)
         callbacks.on_predict_end()
-        return outs
+        return y
 
-    # TODO
     # def evaluate(self, x, y, callbacks=None):
     #     """Returns the loss values & metrics values for the model in test mode."""
     #     raise NotImplementedError(
@@ -1361,24 +1159,3 @@ class LossHistory:
             metrics_test = self.metrics_test[-1]
         self.loss_test.append(loss_test)
         self.metrics_test.append(metrics_test)
-
-    def to_pandas(self, best=True):
-        dic = {}
-        dic["step"] = self.steps
-        best = {"step": "best"}
-        for i in range(len(self.loss_train[0])):
-            dic[f"loss_train{i}"] = [loss[i] for loss in self.loss_train]
-            best[f"loss_train{i}"] = min(dic[f"loss_train{i}"])
-        for i in range(len(self.loss_test[0])):
-            dic[f"loss_test{i}"] = [loss[i] for loss in self.loss_test]
-            best[f"loss_test{i}"] = min(dic[f"loss_test{i}"])
-        for i in range(len(self.metrics_test[0])):
-            dic[f"metrics_test{i}"] = [metric[i] for metric in self.metrics_test]
-            best[f"metrics_test{i}"] = min(dic[f"metrics_test{i}"])
-
-        df = pd.DataFrame(dic)
-        if best:
-            best_df = pd.DataFrame(best, index=[0])
-            return pd.concat([df, best_df], ignore_index=True)
-        else:
-            return df

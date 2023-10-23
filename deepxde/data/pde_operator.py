@@ -140,7 +140,7 @@ class PDEOperator(Data):
         # ...
         # v2, x_N1
         v = np.repeat(func_vals, len(points), axis=0)
-        x = np.tile(points, (len(func_feats), 1))
+        x = np.tile(points, (len(func_vals), 1))
         vx = self.func_space.eval_batch(func_feats, points[:, self.func_vars]).reshape(
             -1, 1
         )
